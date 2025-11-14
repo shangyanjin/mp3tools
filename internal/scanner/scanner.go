@@ -6,13 +6,9 @@ import (
 	"strings"
 )
 
+// Only support MP3 files
 var audioExtensions = map[string]bool{
-	".mp3":  true,
-	".flac": true,
-	".m4a":  true,
-	".aac":  true,
-	".ogg":  true,
-	".wma":  true,
+	".mp3": true,
 }
 
 type AudioFile struct {
@@ -53,4 +49,3 @@ func ScanDirectory(rootPath string) ([]AudioFile, error) {
 
 	return files, err
 }
-

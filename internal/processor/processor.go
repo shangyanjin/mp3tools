@@ -24,9 +24,10 @@ type ProcessOptions struct {
 
 // Processor handles batch processing of audio files
 type Processor struct {
-	options ProcessOptions
-	stats   Statistics
-	mu      sync.Mutex
+	options      ProcessOptions
+	stats        Statistics
+	mu           sync.Mutex
+	currentIndex int
 }
 
 // Statistics tracks processing statistics
@@ -102,6 +103,11 @@ func (p *Processor) ProcessFiles(files []scanner.AudioFile, command string, thre
 
 // processFile processes a single audio file
 func (p *Processor) processFile(file scanner.AudioFile, command string) error {
+	// Increment current index
+	p.mu.Lock()
+	p.currentIndex++
+	p.mu.Unlock()
+
 	switch command {
 	case "scan":
 		return p.scanFile(file)
@@ -116,6 +122,13 @@ func (p *Processor) processFile(file scanner.AudioFile, command string) error {
 	default:
 		return fmt.Errorf("unknown command: %s", command)
 	}
+}
+
+// getCurrentIndex returns the current processing index
+func (p *Processor) getCurrentIndex() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.currentIndex
 }
 
 // scanFile scans and displays file tags
@@ -142,7 +155,17 @@ func (p *Processor) scanFile(file scanner.AudioFile) error {
 
 // checkFile displays current tags only
 func (p *Processor) checkFile(file scanner.AudioFile) error {
-	return p.scanFile(file)
+	meta, err := tagger.ReadTags(file.Path)
+	if err != nil {
+		return fmt.Errorf("failed to read tags from %s: %w", file.Path, err)
+	}
+
+	// Print output in same format as fix/tag commands
+	fmt.Printf("[%d/%d] Processing: %s | Title: %q | Album: %q | Artist: %q\n",
+		p.getCurrentIndex(), p.stats.Total, filepath.Base(file.Path),
+		meta.Title, meta.Album, meta.Artist)
+
+	return nil
 }
 
 // testFile simulates processing without modifying files
@@ -171,8 +194,90 @@ func (p *Processor) fixFile(file scanner.AudioFile) error {
 		return fmt.Errorf("failed to read tags from %s: %w", file.Path, err)
 	}
 
-	// Process metadata
-	newMeta := p.processMetadata(meta, file)
+	// Track changes for output
+	var changes []string
+	encodingFixed := 0
+	autoAlbum := false
+	autoTitle := false
+
+	// Process metadata and track changes
+	newMeta := &tagger.Metadata{
+		Title:  meta.Title,
+		Artist: meta.Artist,
+		Album:  meta.Album,
+		Year:   meta.Year,
+		Genre:  meta.Genre,
+		Track:  meta.Track,
+	}
+
+	// Fix encoding
+	if newMeta.Title != "" {
+		fixed, charset, changed := encoder.FixEncoding(newMeta.Title)
+		if changed {
+			changes = append(changes, fmt.Sprintf("Title: %s -> UTF-8", charset))
+			newMeta.Title = fixed
+			encodingFixed++
+		}
+	}
+
+	if newMeta.Artist != "" {
+		fixed, charset, changed := encoder.FixEncoding(newMeta.Artist)
+		if changed {
+			changes = append(changes, fmt.Sprintf("Artist: %s -> UTF-8", charset))
+			newMeta.Artist = fixed
+			encodingFixed++
+		}
+	}
+
+	if newMeta.Album != "" {
+		fixed, charset, changed := encoder.FixEncoding(newMeta.Album)
+		if changed {
+			changes = append(changes, fmt.Sprintf("Album: %s -> UTF-8", charset))
+			newMeta.Album = fixed
+			encodingFixed++
+		}
+	}
+
+	// Auto-derive album from directory name if empty
+	if newMeta.Album == "" {
+		dirName := filepath.Base(filepath.Dir(file.Path))
+		if dirName != "" && dirName != "." {
+			newMeta.Album = dirName
+			autoAlbum = true
+			changes = append(changes, fmt.Sprintf("Album=%q (from directory)", dirName))
+		}
+	}
+
+	// Auto-format title with zero-padding
+	if newMeta.Title != "" {
+		formatted := formatTitle(newMeta.Title)
+		if formatted != newMeta.Title {
+			newMeta.Title = formatted
+			autoTitle = true
+			changes = append(changes, "Title zero-padded")
+		}
+	}
+
+	// If Force is true, derive tags from filename and directory
+	if p.options.Force {
+		fileName := filepath.Base(file.Path)
+		fileName = strings.TrimSuffix(fileName, filepath.Ext(fileName))
+
+		// Extract number and title from filename
+		if match := extractNumberAndTitle(fileName); match != nil {
+			number := match[1]
+
+			// Get album from directory name
+			dirName := filepath.Base(filepath.Dir(file.Path))
+			album := dirName
+
+			// Format: Title = Number + Album
+			newMeta.Title = number + " " + album
+			newMeta.Artist = album
+			newMeta.Album = album
+			changes = append(changes, "Force: derived from filename and directory")
+		}
+	}
 
 	// Determine output path
 	outPath := file.Path
@@ -201,9 +306,41 @@ func (p *Processor) fixFile(file scanner.AudioFile) error {
 		}
 	}
 
+	// Update statistics
 	p.mu.Lock()
 	p.stats.TagsUpdated++
+	p.stats.EncodingFixed += encodingFixed
+	if autoAlbum {
+		p.stats.AutoAlbums++
+	}
+	if autoTitle {
+		p.stats.AutoTitles++
+	}
 	p.mu.Unlock()
+
+	// Print output
+	fmt.Printf("[%d/%d] Processing: %s", p.getCurrentIndex(), p.stats.Total, filepath.Base(file.Path))
+
+	// Show changes if any
+	hasChanges := false
+	if newMeta.Title != meta.Title {
+		fmt.Printf(" | Title: %q -> %q", meta.Title, newMeta.Title)
+		hasChanges = true
+	}
+	if newMeta.Album != meta.Album {
+		fmt.Printf(" | Album: %q -> %q", meta.Album, newMeta.Album)
+		hasChanges = true
+	}
+	if newMeta.Artist != meta.Artist {
+		fmt.Printf(" | Artist: %q -> %q", meta.Artist, newMeta.Artist)
+		hasChanges = true
+	}
+
+	if hasChanges {
+		fmt.Printf(" | Updated: ✓\n")
+	} else {
+		fmt.Printf(" | No changes\n")
+	}
 
 	return nil
 }
@@ -248,6 +385,30 @@ func (p *Processor) tagFile(file scanner.AudioFile) error {
 	p.mu.Lock()
 	p.stats.TagsUpdated++
 	p.mu.Unlock()
+
+	// Print output
+	fmt.Printf("[%d/%d] Processing: %s", p.getCurrentIndex(), p.stats.Total, filepath.Base(file.Path))
+
+	// Show changes if any
+	hasChanges := false
+	if newMeta.Title != meta.Title {
+		fmt.Printf(" | Title: %q -> %q", meta.Title, newMeta.Title)
+		hasChanges = true
+	}
+	if newMeta.Album != meta.Album {
+		fmt.Printf(" | Album: %q -> %q", meta.Album, newMeta.Album)
+		hasChanges = true
+	}
+	if newMeta.Artist != meta.Artist {
+		fmt.Printf(" | Artist: %q -> %q", meta.Artist, newMeta.Artist)
+		hasChanges = true
+	}
+
+	if hasChanges {
+		fmt.Printf(" | Updated: ✓\n")
+	} else {
+		fmt.Printf(" | No changes\n")
+	}
 
 	return nil
 }
