@@ -21,6 +21,11 @@ All notable changes to this project will be documented in this file.
 - Tag derivation from filename/directory: Title = Number + Album, Artist = Album (with `-f` flag)
 - ID3v2.4 tag writing with UTF-8 encoding
 - Unified output format across all commands
+- Filename and directory name UTF-8 encoding conversion
+- Auto-fill Title from filename (extract number and move to front with zero-padding)
+- Auto-fill Artist from directory name (extract before underscore)
+- Garbled text detection and automatic fallback to filename/directory name
+- Pre-write garbled text check and fix
 
 ### Changed
 - **BREAKING**: Only MP3 files are supported (removed FLAC, M4A, AAC, OGG, WMA support)
@@ -29,19 +34,20 @@ All notable changes to this project will be documented in this file.
 - `fix` command: Supports `-f` flag to derive tags before fixing encoding
 - `test` command: Supports `-f` and `-u` flags for simulation
 - `check` command: Unified output format with fix/tag commands
-- Output format: Shows `old -> new` changes for each modified field
-- Output format: Shows `No changes` when no modifications are made
+- Output format: Simplified to `[n/total] Processing: filename → Title: "value", Artist: "value", Album: "value"`
+- Processing logic: Priority encoding fix, then fallback to filename/directory if empty or garbled
+- `-f` flag: Now works as fallback (fill from filename/directory only when field is empty or garbled)
+- `-u` flag: Priority encoding fix, fallback to filename/directory only when empty or garbled
 
 ### Added Features
-- `-u, --update` flag: Fix encoding only (for `tag` command, default: `true`) or update original files (for other commands)
-- `-f, --force` flag: Derive tags from filename and directory name (Title = Number + Album, Artist = Album)
+- `-u, --update` flag: Priority encoding fix, fallback to filename/directory only when empty or garbled (for `tag` command, default: `true`) or update original files (for other commands)
+- `-f, --force` flag: Fallback to filename/directory when field is empty or garbled (force update if garbled)
+- `-a, --all` flag: Force update all tags (overwrite existing tags)
 - `-n, --threads` flag: Configure number of worker threads (default: 5)
 - `-o, --outdir` flag: Specify custom output directory (default: update original files)
 
 ### Output Format
-- `fix`/`tag` commands: `[n/total] Processing: filename | Title: "old" -> "new" | Album: "old" -> "new" | Artist: "old" -> "new" | Updated: ✓`
-- `check` command: `[n/total] Processing: filename | Title: "value" | Album: "value" | Artist: "value"`
-- No changes: `[n/total] Processing: filename | No changes`
+- `fix`/`tag`/`check` commands: `[n/total] Processing: filename → Title: "value", Artist: "value", Album: "value"`
 
 ## [0.1.0] - 2025-11-14
 

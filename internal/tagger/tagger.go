@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/bogem/id3v2/v2"
 	"github.com/dhowden/tag"
 )
 
@@ -21,6 +22,52 @@ type Metadata struct {
 
 // ReadTags reads metadata tags from an audio file
 func ReadTags(filePath string) (*Metadata, error) {
+	// Try to read using id3v2 first to get raw bytes
+	id3Tag, err := id3v2.Open(filePath, id3v2.Options{Parse: true})
+	if err == nil {
+		defer id3Tag.Close()
+
+		// Get raw text frames to handle encoding properly
+		title := readTextFrame(id3Tag, "TIT2")
+		artist := readTextFrame(id3Tag, "TPE1")
+		album := readTextFrame(id3Tag, "TALB")
+		genre := readTextFrame(id3Tag, "TCON")
+		comment := readCommentFrame(id3Tag)
+
+		// Get year and track
+		year := 0
+		if yearStr := id3Tag.Year(); yearStr != "" {
+			// Try to parse year
+			if len(yearStr) >= 4 {
+				fmt.Sscanf(yearStr[:4], "%d", &year)
+			}
+		}
+
+		track := 0
+		trackFrame := id3Tag.GetTextFrame("TRCK")
+		if trackFrame.Text != "" {
+			fmt.Sscanf(trackFrame.Text, "%d", &track)
+		}
+
+		// Determine format
+		format := tag.UnknownFormat
+		if id3Tag != nil {
+			format = tag.Format("MP3")
+		}
+
+		return &Metadata{
+			Title:   title,
+			Artist:  artist,
+			Album:   album,
+			Year:    year,
+			Genre:   genre,
+			Track:   track,
+			Comment: comment,
+			Format:  format,
+		}, nil
+	}
+
+	// Fallback to dhowden/tag if id3v2 fails
 	f, err := os.Open(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open file: %w", err)
@@ -48,6 +95,36 @@ func ReadTags(filePath string) (*Metadata, error) {
 		Comment: meta.Comment(),
 		Format:  meta.Format(),
 	}, nil
+}
+
+// readTextFrame reads a text frame and handles encoding conversion
+func readTextFrame(tag *id3v2.Tag, frameID string) string {
+	textFrame := tag.GetTextFrame(frameID)
+	if textFrame.Text == "" {
+		return ""
+	}
+
+	// Get the text value
+	text := textFrame.Text
+
+	// If text contains invalid UTF-8 or looks like it needs encoding conversion,
+	// we'll let the encoder.FixEncoding handle it later
+	return text
+}
+
+// readCommentFrame reads a comment frame and handles encoding conversion
+func readCommentFrame(tag *id3v2.Tag) string {
+	commentFrames := tag.GetFrames(tag.CommonID("COMM"))
+	if len(commentFrames) == 0 {
+		return ""
+	}
+
+	// Get the first comment frame
+	if comm, ok := commentFrames[0].(id3v2.CommentFrame); ok {
+		return comm.Text
+	}
+
+	return ""
 }
 
 // HasTag checks if a specific tag field has a value
@@ -114,4 +191,3 @@ func GetRawBytes(filePath string, field string) ([]byte, error) {
 
 	return []byte(value), nil
 }
-

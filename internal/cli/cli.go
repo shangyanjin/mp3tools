@@ -11,10 +11,11 @@ import (
 )
 
 var (
-	force   bool
-	threads int
-	outdir  string
-	update  bool
+	force    bool
+	forceAll bool
+	threads  int
+	outdir   string
+	update   bool
 )
 
 var rootCmd = &cobra.Command{
@@ -32,6 +33,7 @@ Commands:
 
 Options:
   -f, --force    Derive tags from filename and directory name (for tag command)
+  -a, --all      Force update all tags (overwrite existing tags)
   -n, --threads  Number of worker threads (default: 5)
   -u, --update   Fix encoding only (for tag command, default: true) or update original files (for other commands)
   -o, --outdir   Output directory, preserve directory structure (default: update original files)
@@ -94,16 +96,19 @@ func init() {
 	scanCmd.Flags().BoolVarP(&update, "update", "u", false, "Update original MP3 files (overwrite)")
 
 	fixCmd.Flags().BoolVarP(&force, "force", "f", false, "Derive tags from filename and directory name")
+	fixCmd.Flags().BoolVarP(&forceAll, "all", "a", false, "Force update all tags (overwrite existing tags)")
 	fixCmd.Flags().IntVarP(&threads, "threads", "n", 5, "Number of worker threads")
 	fixCmd.Flags().StringVarP(&outdir, "outdir", "o", "output", "Output directory, preserve directory structure (default: output)")
 	fixCmd.Flags().BoolVarP(&update, "update", "u", false, "Update original MP3 files (overwrite)")
 
 	tagCmd.Flags().BoolVarP(&force, "force", "f", false, "Derive tags from filename and directory name")
+	tagCmd.Flags().BoolVarP(&forceAll, "all", "a", false, "Force update all tags (overwrite existing tags)")
 	tagCmd.Flags().IntVarP(&threads, "threads", "n", 5, "Number of worker threads")
 	tagCmd.Flags().StringVarP(&outdir, "outdir", "o", "output", "Output directory, preserve directory structure (default: output)")
 	tagCmd.Flags().BoolVarP(&update, "update", "u", true, "Fix encoding only (default: true)")
 
 	testCmd.Flags().BoolVarP(&force, "force", "f", false, "Derive tags from filename and directory name")
+	testCmd.Flags().BoolVarP(&forceAll, "all", "a", false, "Force update all tags (overwrite existing tags)")
 	testCmd.Flags().IntVarP(&threads, "threads", "n", 5, "Number of worker threads")
 	testCmd.Flags().BoolVarP(&update, "update", "u", true, "Fix encoding only (default: true)")
 
@@ -134,9 +139,10 @@ func runScan(cmd *cobra.Command, args []string) {
 	}
 
 	proc := processor.New(processor.ProcessOptions{
-		Force:   force,
-		OutDir:  outputDir,
-		Threads: threads,
+		Force:    force,
+		ForceAll: forceAll,
+		OutDir:   outputDir,
+		Threads:  threads,
 	})
 
 	if err := proc.ProcessFiles(files, "scan", threads); err != nil {
@@ -166,6 +172,7 @@ func runFix(cmd *cobra.Command, args []string) {
 
 	proc := processor.New(processor.ProcessOptions{
 		Force:          force,
+		ForceAll:       forceAll,
 		UpdateEncoding: false,
 		OutDir:         outputDir,
 		Threads:        threads,
@@ -198,6 +205,7 @@ func runTag(cmd *cobra.Command, args []string) {
 
 	proc := processor.New(processor.ProcessOptions{
 		Force:          force,
+		ForceAll:       forceAll,
 		UpdateEncoding: update,
 		OutDir:         outputDir,
 		Threads:        threads,

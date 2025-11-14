@@ -168,3 +168,55 @@ func isValidUTF8WithChinese(s string) bool {
 	}
 	return hasChinese
 }
+
+// IsGarbled checks if a string appears to be garbled (unrecoverable)
+func IsGarbled(str string) bool {
+	if str == "" {
+		return false
+	}
+
+	// Check if string contains many question marks or replacement characters
+	questionMarkCount := 0
+	replacementCharCount := 0
+	invalidCharCount := 0
+
+	for _, r := range str {
+		if r == '?' {
+			questionMarkCount++
+		}
+		if r == '\uFFFD' { // Unicode replacement character
+			replacementCharCount++
+		}
+		if r > 0x10FFFF || (r >= 0xD800 && r <= 0xDFFF) {
+			invalidCharCount++
+		}
+	}
+
+	// If more than 30% of characters are question marks or replacement characters, likely garbled
+	totalChars := len([]rune(str))
+	if totalChars == 0 {
+		return false
+	}
+
+	problemRatio := float64(questionMarkCount+replacementCharCount+invalidCharCount) / float64(totalChars)
+	if problemRatio > 0.3 {
+		return true
+	}
+
+	// Check if string contains many non-printable or unusual characters
+	// that suggest encoding issues
+	unusualCount := 0
+	for _, r := range str {
+		// Check for characters in problematic ranges that often indicate encoding issues
+		if (r >= 0x80 && r <= 0x9F) || // Control characters in Latin-1
+			(r >= 0x00 && r < 0x20 && r != '\n' && r != '\r' && r != '\t') {
+			unusualCount++
+		}
+	}
+
+	if float64(unusualCount)/float64(totalChars) > 0.2 {
+		return true
+	}
+
+	return false
+}

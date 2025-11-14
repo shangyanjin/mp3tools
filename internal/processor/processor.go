@@ -17,6 +17,7 @@ import (
 // ProcessOptions contains options for processing files
 type ProcessOptions struct {
 	Force          bool   // Derive tags from filename and directory
+	ForceAll       bool   // Force update all tags (overwrite existing tags)
 	UpdateEncoding bool   // Fix encoding only (for tag command)
 	OutDir         string // Output directory (empty means update in place)
 	Threads        int    // Number of worker threads
@@ -161,9 +162,9 @@ func (p *Processor) checkFile(file scanner.AudioFile) error {
 	}
 
 	// Print output in same format as fix/tag commands
-	fmt.Printf("[%d/%d] Processing: %s | Title: %q | Album: %q | Artist: %q\n",
-		p.getCurrentIndex(), p.stats.Total, filepath.Base(file.Path),
-		meta.Title, meta.Album, meta.Artist)
+	fileName := convertPathToUTF8(filepath.Base(file.Path))
+	fmt.Printf("[%d/%d] Processing: %s → Title: %q, Artist: %q, Album: %q\n",
+		p.getCurrentIndex(), p.stats.Total, fileName, meta.Title, meta.Artist, meta.Album)
 
 	return nil
 }
@@ -210,7 +211,7 @@ func (p *Processor) fixFile(file scanner.AudioFile) error {
 		Track:  meta.Track,
 	}
 
-	// Fix encoding
+	// Step 1: Fix encoding first (priority)
 	if newMeta.Title != "" {
 		fixed, charset, changed := encoder.FixEncoding(newMeta.Title)
 		if changed {
@@ -238,17 +239,7 @@ func (p *Processor) fixFile(file scanner.AudioFile) error {
 		}
 	}
 
-	// Auto-derive album from directory name if empty
-	if newMeta.Album == "" {
-		dirName := filepath.Base(filepath.Dir(file.Path))
-		if dirName != "" && dirName != "." {
-			newMeta.Album = dirName
-			autoAlbum = true
-			changes = append(changes, fmt.Sprintf("Album=%q (from directory)", dirName))
-		}
-	}
-
-	// Auto-format title with zero-padding
+	// Step 2: Auto-format title with zero-padding
 	if newMeta.Title != "" {
 		formatted := formatTitle(newMeta.Title)
 		if formatted != newMeta.Title {
@@ -258,24 +249,46 @@ func (p *Processor) fixFile(file scanner.AudioFile) error {
 		}
 	}
 
-	// If Force is true, derive tags from filename and directory
-	if p.options.Force {
-		fileName := filepath.Base(file.Path)
+	// Step 3: Fill from filename/directory if empty or garbled (fallback)
+	// Check if we should use fallback (Force or UpdateEncoding flag)
+	useFallback := p.options.Force || !p.options.UpdateEncoding
+
+	if useFallback {
+		fileName := convertPathToUTF8(filepath.Base(file.Path))
 		fileName = strings.TrimSuffix(fileName, filepath.Ext(fileName))
+		dirName := convertPathToUTF8(filepath.Base(filepath.Dir(file.Path)))
 
-		// Extract number and title from filename
-		if match := extractNumberAndTitle(fileName); match != nil {
-			number := match[1]
+		// Fill Title: empty or garbled (and Force allows overwrite)
+		shouldFillTitle := newMeta.Title == "" || (encoder.IsGarbled(newMeta.Title) && (p.options.Force || p.options.ForceAll))
+		if shouldFillTitle && fileName != "" {
+			formattedTitle := formatTitleFromFilename(fileName)
+			newMeta.Title = formattedTitle
+			autoTitle = true
+			changes = append(changes, fmt.Sprintf("Title=%q (from filename, fallback)", formattedTitle))
+		}
 
-			// Get album from directory name
-			dirName := filepath.Base(filepath.Dir(file.Path))
-			album := dirName
+		// Fill Album: empty or garbled (and Force allows overwrite)
+		shouldFillAlbum := newMeta.Album == "" || (encoder.IsGarbled(newMeta.Album) && (p.options.Force || p.options.ForceAll))
+		if shouldFillAlbum && dirName != "" && dirName != "." {
+			newMeta.Album = dirName
+			autoAlbum = true
+			changes = append(changes, fmt.Sprintf("Album=%q (from directory, fallback)", dirName))
+		}
 
-			// Format: Title = Number + Album
-			newMeta.Title = number + " " + album
-			newMeta.Artist = album
-			newMeta.Album = album
-			changes = append(changes, "Force: derived from filename and directory")
+		// Fill Artist: empty or garbled (and Force allows overwrite)
+		shouldFillArtist := newMeta.Artist == "" || (encoder.IsGarbled(newMeta.Artist) && (p.options.Force || p.options.ForceAll))
+		if shouldFillArtist && dirName != "" && dirName != "." {
+			// Extract artist from directory name (before underscore)
+			if strings.Contains(dirName, "_") {
+				parts := strings.SplitN(dirName, "_", 2)
+				if len(parts) >= 1 && parts[0] != "" {
+					newMeta.Artist = parts[0]
+					changes = append(changes, fmt.Sprintf("Artist=%q (from directory, fallback)", parts[0]))
+				}
+			} else {
+				newMeta.Artist = dirName
+				changes = append(changes, fmt.Sprintf("Artist=%q (from directory, fallback)", dirName))
+			}
 		}
 	}
 
@@ -319,28 +332,9 @@ func (p *Processor) fixFile(file scanner.AudioFile) error {
 	p.mu.Unlock()
 
 	// Print output
-	fmt.Printf("[%d/%d] Processing: %s", p.getCurrentIndex(), p.stats.Total, filepath.Base(file.Path))
-
-	// Show changes if any
-	hasChanges := false
-	if newMeta.Title != meta.Title {
-		fmt.Printf(" | Title: %q -> %q", meta.Title, newMeta.Title)
-		hasChanges = true
-	}
-	if newMeta.Album != meta.Album {
-		fmt.Printf(" | Album: %q -> %q", meta.Album, newMeta.Album)
-		hasChanges = true
-	}
-	if newMeta.Artist != meta.Artist {
-		fmt.Printf(" | Artist: %q -> %q", meta.Artist, newMeta.Artist)
-		hasChanges = true
-	}
-
-	if hasChanges {
-		fmt.Printf(" | Updated: ✓\n")
-	} else {
-		fmt.Printf(" | No changes\n")
-	}
+	fileName := convertPathToUTF8(filepath.Base(file.Path))
+	fmt.Printf("[%d/%d] Processing: %s → Title: %q, Artist: %q, Album: %q\n",
+		p.getCurrentIndex(), p.stats.Total, fileName, newMeta.Title, newMeta.Artist, newMeta.Album)
 
 	return nil
 }
@@ -359,6 +353,40 @@ func (p *Processor) tagFile(file scanner.AudioFile) error {
 	outPath := file.Path
 	if p.options.OutDir != "" {
 		outPath = filepath.Join(p.options.OutDir, file.RelPath)
+	}
+
+	// Before writing, check if any field is garbled and fill from filename/directory if needed
+	fileNameForCheck := convertPathToUTF8(filepath.Base(file.Path))
+	fileNameForCheck = strings.TrimSuffix(fileNameForCheck, filepath.Ext(fileNameForCheck))
+	dirNameForCheck := convertPathToUTF8(filepath.Base(filepath.Dir(file.Path)))
+
+	// Check and fix Title before writing
+	if encoder.IsGarbled(newMeta.Title) && fileNameForCheck != "" {
+		formattedTitle := formatTitleFromFilename(fileNameForCheck)
+		newMeta.Title = formattedTitle
+		p.mu.Lock()
+		p.stats.AutoTitles++
+		p.mu.Unlock()
+	}
+
+	// Check and fix Album before writing
+	if encoder.IsGarbled(newMeta.Album) && dirNameForCheck != "" && dirNameForCheck != "." {
+		newMeta.Album = dirNameForCheck
+		p.mu.Lock()
+		p.stats.AutoAlbums++
+		p.mu.Unlock()
+	}
+
+	// Check and fix Artist before writing
+	if encoder.IsGarbled(newMeta.Artist) && dirNameForCheck != "" && dirNameForCheck != "." {
+		if strings.Contains(dirNameForCheck, "_") {
+			parts := strings.SplitN(dirNameForCheck, "_", 2)
+			if len(parts) >= 1 && parts[0] != "" {
+				newMeta.Artist = parts[0]
+			}
+		} else {
+			newMeta.Artist = dirNameForCheck
+		}
 	}
 
 	// Write tags
@@ -387,28 +415,9 @@ func (p *Processor) tagFile(file scanner.AudioFile) error {
 	p.mu.Unlock()
 
 	// Print output
-	fmt.Printf("[%d/%d] Processing: %s", p.getCurrentIndex(), p.stats.Total, filepath.Base(file.Path))
-
-	// Show changes if any
-	hasChanges := false
-	if newMeta.Title != meta.Title {
-		fmt.Printf(" | Title: %q -> %q", meta.Title, newMeta.Title)
-		hasChanges = true
-	}
-	if newMeta.Album != meta.Album {
-		fmt.Printf(" | Album: %q -> %q", meta.Album, newMeta.Album)
-		hasChanges = true
-	}
-	if newMeta.Artist != meta.Artist {
-		fmt.Printf(" | Artist: %q -> %q", meta.Artist, newMeta.Artist)
-		hasChanges = true
-	}
-
-	if hasChanges {
-		fmt.Printf(" | Updated: ✓\n")
-	} else {
-		fmt.Printf(" | No changes\n")
-	}
+	fileNameForDisplay := convertPathToUTF8(filepath.Base(file.Path))
+	fmt.Printf("[%d/%d] Processing: %s → Title: %q, Artist: %q, Album: %q\n",
+		p.getCurrentIndex(), p.stats.Total, fileNameForDisplay, newMeta.Title, newMeta.Artist, newMeta.Album)
 
 	return nil
 }
@@ -424,7 +433,7 @@ func (p *Processor) processMetadata(meta *tagger.Metadata, file scanner.AudioFil
 		Track:  meta.Track,
 	}
 
-	// Fix encoding
+	// Step 1: Fix encoding first (priority)
 	if newMeta.Title != "" {
 		fixed, _, changed := encoder.FixEncoding(newMeta.Title)
 		if changed {
@@ -456,22 +465,11 @@ func (p *Processor) processMetadata(meta *tagger.Metadata, file scanner.AudioFil
 	}
 
 	// If UpdateEncoding is true, only fix encoding, don't derive tags
-	if p.options.UpdateEncoding {
+	if p.options.UpdateEncoding && !p.options.Force {
 		return newMeta
 	}
 
-	// Auto-derive album from directory name if empty
-	if newMeta.Album == "" {
-		dirName := filepath.Base(filepath.Dir(file.Path))
-		if dirName != "" && dirName != "." {
-			newMeta.Album = dirName
-			p.mu.Lock()
-			p.stats.AutoAlbums++
-			p.mu.Unlock()
-		}
-	}
-
-	// Auto-format title with zero-padding
+	// Step 2: Auto-format title with zero-padding
 	if newMeta.Title != "" {
 		formatted := formatTitle(newMeta.Title)
 		if formatted != newMeta.Title {
@@ -482,31 +480,41 @@ func (p *Processor) processMetadata(meta *tagger.Metadata, file scanner.AudioFil
 		}
 	}
 
-	// If Force is true, derive tags from filename and directory
-	if p.options.Force {
-		fileName := filepath.Base(file.Path)
-		fileName = strings.TrimSuffix(fileName, filepath.Ext(fileName))
+	// Step 3: Fill from filename/directory if empty or garbled (fallback)
+	fileNameForFallback := convertPathToUTF8(filepath.Base(file.Path))
+	fileNameForFallback = strings.TrimSuffix(fileNameForFallback, filepath.Ext(fileNameForFallback))
+	dirNameForFallback := convertPathToUTF8(filepath.Base(filepath.Dir(file.Path)))
 
-		// Extract number from filename (e.g., "01", "1", etc.)
-		re := regexp.MustCompile(`^(\d+)`)
-		matches := re.FindStringSubmatch(fileName)
+	// Fill Title: empty or garbled (and Force allows overwrite)
+	shouldFillTitle := newMeta.Title == "" || (encoder.IsGarbled(newMeta.Title) && (p.options.Force || p.options.ForceAll))
+	if shouldFillTitle && fileNameForFallback != "" {
+		formattedTitle := formatTitleFromFilename(fileNameForFallback)
+		newMeta.Title = formattedTitle
+		p.mu.Lock()
+		p.stats.AutoTitles++
+		p.mu.Unlock()
+	}
 
-		if len(matches) >= 2 {
-			number := matches[1]
-			// Pad with zero if single digit
-			if len(number) == 1 {
-				number = "0" + number
+	// Fill Album: empty or garbled (and Force allows overwrite)
+	shouldFillAlbum := newMeta.Album == "" || (encoder.IsGarbled(newMeta.Album) && (p.options.Force || p.options.ForceAll))
+	if shouldFillAlbum && dirNameForFallback != "" && dirNameForFallback != "." {
+		newMeta.Album = dirNameForFallback
+		p.mu.Lock()
+		p.stats.AutoAlbums++
+		p.mu.Unlock()
+	}
+
+	// Fill Artist: empty or garbled (and Force allows overwrite)
+	shouldFillArtist := newMeta.Artist == "" || (encoder.IsGarbled(newMeta.Artist) && (p.options.Force || p.options.ForceAll))
+	if shouldFillArtist && dirNameForFallback != "" && dirNameForFallback != "." {
+		// Extract artist from directory name (before underscore)
+		if strings.Contains(dirNameForFallback, "_") {
+			parts := strings.SplitN(dirNameForFallback, "_", 2)
+			if len(parts) >= 1 && parts[0] != "" {
+				newMeta.Artist = parts[0]
 			}
-
-			// Get album from directory name
-			dirName := filepath.Base(filepath.Dir(file.Path))
-			album := dirName
-
-			// Format: Title = Number + Album
-			newMeta.Title = number + " " + album
-			// Artist = Album
-			newMeta.Artist = album
-			newMeta.Album = album
+		} else {
+			newMeta.Artist = dirNameForFallback
 		}
 	}
 
@@ -530,6 +538,34 @@ func formatTitle(title string) string {
 	}
 
 	return title
+}
+
+// formatTitleFromFilename extracts number from end of filename and moves it to front with zero-padding
+// Example: "康熙大帝（第二卷）35" -> "35 康熙大帝（第二卷）"
+// Example: "康熙大帝5" -> "05 康熙大帝"
+func formatTitleFromFilename(fileName string) string {
+	// Match pattern: extract trailing digits from filename
+	// Pattern: "text数字" or "text 数字"
+	re := regexp.MustCompile(`^(.+?)(\d+)$`)
+	matches := re.FindStringSubmatch(fileName)
+
+	if len(matches) == 3 {
+		text := matches[1]
+		number := matches[2]
+
+		// Remove trailing spaces from text
+		text = strings.TrimRight(text, " ")
+
+		// Pad number with zero if single digit
+		if len(number) == 1 {
+			number = "0" + number
+		}
+
+		return number + " " + text
+	}
+
+	// If no number found at end, return original filename
+	return fileName
 }
 
 // extractNumberAndTitle extracts number and title from filename
@@ -559,4 +595,17 @@ func (p *Processor) printStatistics() {
 	fmt.Printf("  Auto-derived albums: %d\n", p.stats.AutoAlbums)
 	fmt.Printf("  Auto-formatted titles: %d\n", p.stats.AutoTitles)
 	fmt.Println()
+}
+
+// convertPathToUTF8 converts a file path component to UTF-8 encoding
+func convertPathToUTF8(path string) string {
+	if path == "" {
+		return path
+	}
+	// Try to convert encoding, if it fails, return original
+	utf8Path, _, err := encoder.ConvertStringToUTF8(path)
+	if err != nil {
+		return path
+	}
+	return utf8Path
 }
