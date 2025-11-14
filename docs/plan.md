@@ -35,6 +35,38 @@
 - 实时显示处理状态、进度百分比、速度等信息
 - 清晰的终端输出格式
 
+## 模块架构
+
+### internal/scanner
+- 递归目录遍历
+- 音频文件识别和过滤
+- 文件列表生成
+
+### internal/tagger
+- 标签解析（只读）
+- 支持多格式音频标签（ID3、Vorbis 等）
+- 元数据提取
+
+### internal/writer
+- ID3v2.4 标签写入（UTF-8）
+- 使用 github.com/bogem/id3v2
+- 支持原地更新和输出到新文件
+
+### internal/encoder
+- 自动编码检测
+- 编码转换（GBK、GB2312 -> UTF-8）
+- 乱码识别
+
+### internal/processor
+- 批量处理协调
+- 多线程并发处理
+- Worker pool 模式
+
+### internal/display
+- 实时进度显示
+- 终端输出格式化
+- 统计信息汇总
+
 ## 技术要点
 
 - 递归目录遍历
@@ -44,6 +76,7 @@
 - 多线程并发处理
 - 实时进度显示和终端输出格式化
 - 错误处理和日志记录
+- 职责分离：tagger 只读，writer 只写
 
 ## 命令设计
 
@@ -84,16 +117,11 @@ Options:
 
 Examples:
   mp3tools scan ./music
-  mp3tools fix ./music
-  mp3tools tag ./music
   mp3tools test ./music
   mp3tools tag ./music -f
-  mp3tools tag ./music -n 5
   mp3tools fix ./music -n 8 -f
-  mp3tools tag ./music -u
   mp3tools fix ./music -u -n 5
   mp3tools tag ./music -o ./custom
-  mp3tools fix ./music -o ./fixed -n 5
 
 For more information about a command, use:
   mp3tools <command> --help

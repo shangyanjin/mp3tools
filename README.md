@@ -159,7 +159,8 @@ Statistics:
 ### Architecture
 
 - **Scanner**: Recursive directory traversal and audio file detection
-- **Tagger**: Unified interface for reading/writing tags across formats
+- **Tagger**: Unified interface for reading tags across formats (read-only)
+- **Writer**: ID3v2.4 tag writing with UTF-8 encoding (write-only)
 - **Encoder**: Encoding detection and conversion utilities
 - **Processor**: Batch processing with worker pool pattern
 - **Display**: Real-time progress display and statistics
