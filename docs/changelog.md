@@ -43,7 +43,7 @@ All notable changes to this project will be documented in this file.
 - `check` command: `[n/total] Processing: filename | Title: "value" | Album: "value" | Artist: "value"`
 - No changes: `[n/total] Processing: filename | No changes`
 
-## [0.1.0] - 2025-01-XX
+## [0.1.0] - 2025-11-14
 
 ### Initial Release
 - Core functionality implemented
