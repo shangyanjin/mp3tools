@@ -219,6 +219,10 @@ func (p *Processor) fixFile(file scanner.AudioFile) error {
 			newMeta.Title = fixed
 			encodingFixed++
 		}
+		// Check if still garbled after encoding fix
+		if encoder.IsGarbled(newMeta.Title) {
+			changes = append(changes, "Title: still garbled after encoding fix")
+		}
 	}
 
 	if newMeta.Artist != "" {
@@ -228,6 +232,10 @@ func (p *Processor) fixFile(file scanner.AudioFile) error {
 			newMeta.Artist = fixed
 			encodingFixed++
 		}
+		// Check if still garbled after encoding fix
+		if encoder.IsGarbled(newMeta.Artist) {
+			changes = append(changes, "Artist: still garbled after encoding fix")
+		}
 	}
 
 	if newMeta.Album != "" {
@@ -236,6 +244,41 @@ func (p *Processor) fixFile(file scanner.AudioFile) error {
 			changes = append(changes, fmt.Sprintf("Album: %s -> UTF-8", charset))
 			newMeta.Album = fixed
 			encodingFixed++
+		}
+		// Check if still garbled after encoding fix
+		if encoder.IsGarbled(newMeta.Album) {
+			changes = append(changes, "Album: still garbled after encoding fix")
+		}
+	}
+
+	// Step 1.5: Clean up domains and file extensions
+	if newMeta.Title != "" {
+		cleaned := cleanTagText(newMeta.Title)
+		if cleaned != newMeta.Title {
+			newMeta.Title = cleaned
+			changes = append(changes, "Title cleaned (removed domains/extensions)")
+		}
+		// If cleaned title is empty (e.g., CD default title), treat as empty for fallback
+		if newMeta.Title == "" {
+			changes = append(changes, "Title is empty after cleaning, will use filename")
+		}
+	}
+	if newMeta.Artist != "" {
+		cleaned := cleanTagText(newMeta.Artist)
+		if cleaned != newMeta.Artist {
+			newMeta.Artist = cleaned
+			changes = append(changes, "Artist cleaned (removed domains/extensions)")
+		}
+	}
+	if newMeta.Album != "" {
+		cleaned := cleanTagText(newMeta.Album)
+		if cleaned != newMeta.Album {
+			newMeta.Album = cleaned
+			changes = append(changes, "Album cleaned (removed domains/extensions)")
+		}
+		// If cleaned album is empty (e.g., URL only), treat as empty for fallback
+		if newMeta.Album == "" {
+			changes = append(changes, "Album is empty after cleaning, will use directory")
 		}
 	}
 
@@ -250,45 +293,41 @@ func (p *Processor) fixFile(file scanner.AudioFile) error {
 	}
 
 	// Step 3: Fill from filename/directory if empty or garbled (fallback)
-	// Check if we should use fallback (Force or UpdateEncoding flag)
-	useFallback := p.options.Force || !p.options.UpdateEncoding
+	// Always use fallback if field is empty or garbled (even if UpdateEncoding is true)
+	fileName := convertPathToUTF8(filepath.Base(file.Path))
+	fileName = strings.TrimSuffix(fileName, filepath.Ext(fileName))
+	dirName := convertPathToUTF8(filepath.Base(filepath.Dir(file.Path)))
 
-	if useFallback {
-		fileName := convertPathToUTF8(filepath.Base(file.Path))
-		fileName = strings.TrimSuffix(fileName, filepath.Ext(fileName))
-		dirName := convertPathToUTF8(filepath.Base(filepath.Dir(file.Path)))
+	// Fill Title: empty or garbled (Force allows overwrite even if not garbled)
+	shouldFillTitle := newMeta.Title == "" || encoder.IsGarbled(newMeta.Title) || (p.options.Force && p.options.ForceAll)
+	if shouldFillTitle && fileName != "" {
+		formattedTitle := formatTitleFromFilename(fileName)
+		newMeta.Title = formattedTitle
+		autoTitle = true
+		changes = append(changes, fmt.Sprintf("Title=%q (from filename, fallback)", formattedTitle))
+	}
 
-		// Fill Title: empty or garbled (and Force allows overwrite)
-		shouldFillTitle := newMeta.Title == "" || (encoder.IsGarbled(newMeta.Title) && (p.options.Force || p.options.ForceAll))
-		if shouldFillTitle && fileName != "" {
-			formattedTitle := formatTitleFromFilename(fileName)
-			newMeta.Title = formattedTitle
-			autoTitle = true
-			changes = append(changes, fmt.Sprintf("Title=%q (from filename, fallback)", formattedTitle))
-		}
+	// Fill Album: empty or garbled (Force allows overwrite even if not garbled)
+	shouldFillAlbum := newMeta.Album == "" || encoder.IsGarbled(newMeta.Album) || (p.options.Force && p.options.ForceAll)
+	if shouldFillAlbum && dirName != "" && dirName != "." {
+		newMeta.Album = dirName
+		autoAlbum = true
+		changes = append(changes, fmt.Sprintf("Album=%q (from directory, fallback)", dirName))
+	}
 
-		// Fill Album: empty or garbled (and Force allows overwrite)
-		shouldFillAlbum := newMeta.Album == "" || (encoder.IsGarbled(newMeta.Album) && (p.options.Force || p.options.ForceAll))
-		if shouldFillAlbum && dirName != "" && dirName != "." {
-			newMeta.Album = dirName
-			autoAlbum = true
-			changes = append(changes, fmt.Sprintf("Album=%q (from directory, fallback)", dirName))
-		}
-
-		// Fill Artist: empty or garbled (and Force allows overwrite)
-		shouldFillArtist := newMeta.Artist == "" || (encoder.IsGarbled(newMeta.Artist) && (p.options.Force || p.options.ForceAll))
-		if shouldFillArtist && dirName != "" && dirName != "." {
-			// Extract artist from directory name (before underscore)
-			if strings.Contains(dirName, "_") {
-				parts := strings.SplitN(dirName, "_", 2)
-				if len(parts) >= 1 && parts[0] != "" {
-					newMeta.Artist = parts[0]
-					changes = append(changes, fmt.Sprintf("Artist=%q (from directory, fallback)", parts[0]))
-				}
-			} else {
-				newMeta.Artist = dirName
-				changes = append(changes, fmt.Sprintf("Artist=%q (from directory, fallback)", dirName))
+	// Fill Artist: empty or garbled (Force allows overwrite even if not garbled)
+	shouldFillArtist := newMeta.Artist == "" || encoder.IsGarbled(newMeta.Artist) || (p.options.Force && p.options.ForceAll)
+	if shouldFillArtist && dirName != "" && dirName != "." {
+		// Extract artist from directory name (before underscore)
+		if strings.Contains(dirName, "_") {
+			parts := strings.SplitN(dirName, "_", 2)
+			if len(parts) >= 1 && parts[0] != "" {
+				newMeta.Artist = parts[0]
+				changes = append(changes, fmt.Sprintf("Artist=%q (from directory, fallback)", parts[0]))
 			}
+		} else {
+			newMeta.Artist = dirName
+			changes = append(changes, fmt.Sprintf("Artist=%q (from directory, fallback)", dirName))
 		}
 	}
 
@@ -332,9 +371,9 @@ func (p *Processor) fixFile(file scanner.AudioFile) error {
 	p.mu.Unlock()
 
 	// Print output
-	fileName := convertPathToUTF8(filepath.Base(file.Path))
+	fileNameForDisplay := convertPathToUTF8(filepath.Base(file.Path))
 	fmt.Printf("[%d/%d] Processing: %s → Title: %q, Artist: %q, Album: %q\n",
-		p.getCurrentIndex(), p.stats.Total, fileName, newMeta.Title, newMeta.Artist, newMeta.Album)
+		p.getCurrentIndex(), p.stats.Total, fileNameForDisplay, newMeta.Title, newMeta.Artist, newMeta.Album)
 
 	return nil
 }
@@ -464,9 +503,26 @@ func (p *Processor) processMetadata(meta *tagger.Metadata, file scanner.AudioFil
 		}
 	}
 
-	// If UpdateEncoding is true, only fix encoding, don't derive tags
-	if p.options.UpdateEncoding && !p.options.Force {
-		return newMeta
+	// Step 1.5: Clean up domains and file extensions
+	if newMeta.Title != "" {
+		cleaned := cleanTagText(newMeta.Title)
+		if cleaned != newMeta.Title {
+			newMeta.Title = cleaned
+		}
+		// If cleaned title is empty (e.g., CD default title), treat as empty for fallback
+	}
+	if newMeta.Artist != "" {
+		cleaned := cleanTagText(newMeta.Artist)
+		if cleaned != newMeta.Artist {
+			newMeta.Artist = cleaned
+		}
+	}
+	if newMeta.Album != "" {
+		cleaned := cleanTagText(newMeta.Album)
+		if cleaned != newMeta.Album {
+			newMeta.Album = cleaned
+		}
+		// If cleaned album is empty (e.g., URL only), treat as empty for fallback
 	}
 
 	// Step 2: Auto-format title with zero-padding
@@ -481,12 +537,13 @@ func (p *Processor) processMetadata(meta *tagger.Metadata, file scanner.AudioFil
 	}
 
 	// Step 3: Fill from filename/directory if empty or garbled (fallback)
+	// Always use fallback if field is empty or garbled (even if UpdateEncoding is true)
 	fileNameForFallback := convertPathToUTF8(filepath.Base(file.Path))
 	fileNameForFallback = strings.TrimSuffix(fileNameForFallback, filepath.Ext(fileNameForFallback))
 	dirNameForFallback := convertPathToUTF8(filepath.Base(filepath.Dir(file.Path)))
 
-	// Fill Title: empty or garbled (and Force allows overwrite)
-	shouldFillTitle := newMeta.Title == "" || (encoder.IsGarbled(newMeta.Title) && (p.options.Force || p.options.ForceAll))
+	// Fill Title: empty or garbled (Force allows overwrite even if not garbled)
+	shouldFillTitle := newMeta.Title == "" || encoder.IsGarbled(newMeta.Title) || (p.options.Force && p.options.ForceAll)
 	if shouldFillTitle && fileNameForFallback != "" {
 		formattedTitle := formatTitleFromFilename(fileNameForFallback)
 		newMeta.Title = formattedTitle
@@ -495,8 +552,8 @@ func (p *Processor) processMetadata(meta *tagger.Metadata, file scanner.AudioFil
 		p.mu.Unlock()
 	}
 
-	// Fill Album: empty or garbled (and Force allows overwrite)
-	shouldFillAlbum := newMeta.Album == "" || (encoder.IsGarbled(newMeta.Album) && (p.options.Force || p.options.ForceAll))
+	// Fill Album: empty or garbled (Force allows overwrite even if not garbled)
+	shouldFillAlbum := newMeta.Album == "" || encoder.IsGarbled(newMeta.Album) || (p.options.Force && p.options.ForceAll)
 	if shouldFillAlbum && dirNameForFallback != "" && dirNameForFallback != "." {
 		newMeta.Album = dirNameForFallback
 		p.mu.Lock()
@@ -504,8 +561,8 @@ func (p *Processor) processMetadata(meta *tagger.Metadata, file scanner.AudioFil
 		p.mu.Unlock()
 	}
 
-	// Fill Artist: empty or garbled (and Force allows overwrite)
-	shouldFillArtist := newMeta.Artist == "" || (encoder.IsGarbled(newMeta.Artist) && (p.options.Force || p.options.ForceAll))
+	// Fill Artist: empty or garbled (Force allows overwrite even if not garbled)
+	shouldFillArtist := newMeta.Artist == "" || encoder.IsGarbled(newMeta.Artist) || (p.options.Force && p.options.ForceAll)
 	if shouldFillArtist && dirNameForFallback != "" && dirNameForFallback != "." {
 		// Extract artist from directory name (before underscore)
 		if strings.Contains(dirNameForFallback, "_") {
@@ -516,6 +573,12 @@ func (p *Processor) processMetadata(meta *tagger.Metadata, file scanner.AudioFil
 		} else {
 			newMeta.Artist = dirNameForFallback
 		}
+	}
+
+	// If UpdateEncoding is true and Force is false, only fix encoding, don't derive tags
+	// But we already did fallback above, so this is just for early return
+	if p.options.UpdateEncoding && !p.options.Force {
+		// Already processed fallback above, so just return
 	}
 
 	return newMeta
@@ -543,7 +606,17 @@ func formatTitle(title string) string {
 // formatTitleFromFilename extracts number from end of filename and moves it to front with zero-padding
 // Example: "康熙大帝（第二卷）35" -> "35 康熙大帝（第二卷）"
 // Example: "康熙大帝5" -> "05 康熙大帝"
+// Example: "002" -> "002" (pure number, return as is)
 func formatTitleFromFilename(fileName string) string {
+	// Check if filename is pure number
+	if matched, _ := regexp.MatchString(`^\d+$`, fileName); matched {
+		// Pure number, pad with zero if single digit
+		if len(fileName) == 1 {
+			return "0" + fileName
+		}
+		return fileName
+	}
+
 	// Match pattern: extract trailing digits from filename
 	// Pattern: "text数字" or "text 数字"
 	re := regexp.MustCompile(`^(.+?)(\d+)$`)
@@ -555,6 +628,14 @@ func formatTitleFromFilename(fileName string) string {
 
 		// Remove trailing spaces from text
 		text = strings.TrimRight(text, " ")
+
+		// If text is empty after trimming, just return the number
+		if text == "" {
+			if len(number) == 1 {
+				return "0" + number
+			}
+			return number
+		}
 
 		// Pad number with zero if single digit
 		if len(number) == 1 {
@@ -608,4 +689,64 @@ func convertPathToUTF8(path string) string {
 		return path
 	}
 	return utf8Path
+}
+
+// cleanTagText removes domains, file extensions, and other unwanted content from tag text
+func cleanTagText(text string) string {
+	if text == "" {
+		return text
+	}
+
+	cleaned := text
+
+	// Remove common CD default titles first
+	// Match patterns like "CD Digital Audio, Track#30", "CD Digital Audio Track 30", etc.
+	cdPattern := regexp.MustCompile(`(?i)^CD\s+Digital\s+Audio\s*,?\s*Track#?\s*\d+.*$`)
+	if cdPattern.MatchString(cleaned) {
+		return ""
+	}
+	// Also match variations like "CD Digital Audio, Track 30", "CDDA Track#30", "CD Track 30"
+	cdPattern2 := regexp.MustCompile(`(?i)^CD\s*(Digital\s+Audio|DA)\s*,?\s*Track#?\s*\d+.*$`)
+	if cdPattern2.MatchString(cleaned) {
+		return ""
+	}
+	// Match simple patterns like "CD Track 30", "Track 30", "Track#30" (if starts with these)
+	cdPattern3 := regexp.MustCompile(`(?i)^(CD\s*)?Track#?\s*\d+.*$`)
+	if cdPattern3.MatchString(cleaned) && len(cleaned) < 50 { // Only if short, to avoid false positives
+		return ""
+	}
+
+	// Remove URLs (http://, https://, www.)
+	urlPattern := regexp.MustCompile(`(?i)(https?://[^\s]+|www\.[^\s]+)`)
+	cleaned = urlPattern.ReplaceAllString(cleaned, "")
+
+	// Remove domain patterns in brackets like [bbs.bbxpp.cn], [www.example.com]
+	// Match [anything.domain] where domain is a common TLD
+	domainPattern := regexp.MustCompile(`\[[^\]]*\.(com|cn|net|org|edu|gov|io|co|uk|de|fr|jp|ru|au|ca|br|in|it|es|nl|se|no|dk|fi|pl|cz|hu|gr|pt|ie|at|ch|be|tr|kr|tw|hk|sg|my|th|vn|id|ph|nz|za|mx|ar|cl|pe|eg|sa|ae|il|pk|bd|lk|np|mm|kh|la|mn|kz|uz|az|ge|am|by|ua|md|ro|bg|rs|hr|si|sk|lt|lv|ee|is|mt|cy|lu|mc|ad|li|sm|va|me|ba|mk|al|xk)[^\]]*\]`)
+	cleaned = domainPattern.ReplaceAllString(cleaned, "")
+
+	// Remove file extensions (.MP3, .mp3, .WAV, .wav, etc.)
+	// Match .ext followed by space, end of string, or another dot
+	extPattern := regexp.MustCompile(`(?i)\.(mp3|wav|flac|m4a|aac|ogg|wma|ape|wv|tta|tak|ofr|ofs|off|rka|shn|aa3|gsm|3gp|amr|awb|au|snd|ra|rm|ram|dct|vox|sln)(\s|$|\.)`)
+	cleaned = extPattern.ReplaceAllString(cleaned, "")
+
+	// Remove trailing/leading separators and spaces
+	cleaned = strings.Trim(cleaned, " \t\n\r")
+
+	// Remove trailing dashes and separators (but keep content before them)
+	cleaned = strings.TrimRight(cleaned, "---")
+
+	// Remove multiple consecutive spaces
+	spacePattern := regexp.MustCompile(`\s+`)
+	cleaned = spacePattern.ReplaceAllString(cleaned, " ")
+
+	// Final trim
+	cleaned = strings.TrimSpace(cleaned)
+
+	// If result is empty or only contains separators, return empty
+	if cleaned == "" || cleaned == "---" || cleaned == "[]" {
+		return ""
+	}
+
+	return cleaned
 }

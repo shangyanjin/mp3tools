@@ -179,6 +179,8 @@ func IsGarbled(str string) bool {
 	questionMarkCount := 0
 	replacementCharCount := 0
 	invalidCharCount := 0
+	unusualCharCount := 0
+	latin1ExtendedCount := 0 // Latin-1 extended characters (0xA0-0xFF) that shouldn't appear in Chinese text
 
 	for _, r := range str {
 		if r == '?' {
@@ -190,33 +192,82 @@ func IsGarbled(str string) bool {
 		if r > 0x10FFFF || (r >= 0xD800 && r <= 0xDFFF) {
 			invalidCharCount++
 		}
+		// Check for unusual characters that often indicate encoding issues
+		// Latin-1 control characters, multiplication sign (×), division sign (÷), etc.
+		if (r >= 0x80 && r <= 0x9F) || // Control characters in Latin-1
+			r == 0xD7 || r == 0xF7 || // × and ÷
+			(r >= 0x00 && r < 0x20 && r != '\n' && r != '\r' && r != '\t') {
+			unusualCharCount++
+		}
+		// Check for Latin-1 extended characters (0xA0-0xFF) that often indicate encoding issues
+		// These characters shouldn't appear in Chinese text
+		// If we see many of these, it's likely a GBK/GB2312 string misinterpreted as Latin-1
+		if r >= 0xA0 && r <= 0xFF && r != 0xA0 { // Exclude non-breaking space
+			latin1ExtendedCount++
+		}
 	}
 
-	// If more than 30% of characters are question marks or replacement characters, likely garbled
 	totalChars := len([]rune(str))
 	if totalChars == 0 {
 		return false
 	}
 
-	problemRatio := float64(questionMarkCount+replacementCharCount+invalidCharCount) / float64(totalChars)
-	if problemRatio > 0.3 {
+	// If more than 10% of characters are question marks, likely garbled
+	questionRatio := float64(questionMarkCount) / float64(totalChars)
+	if questionRatio > 0.1 {
 		return true
 	}
 
-	// Check if string contains many non-printable or unusual characters
-	// that suggest encoding issues
-	unusualCount := 0
-	for _, r := range str {
-		// Check for characters in problematic ranges that often indicate encoding issues
-		if (r >= 0x80 && r <= 0x9F) || // Control characters in Latin-1
-			(r >= 0x00 && r < 0x20 && r != '\n' && r != '\r' && r != '\t') {
-			unusualCount++
+	// If more than 20% of characters are problematic, likely garbled
+	problemRatio := float64(questionMarkCount+replacementCharCount+invalidCharCount+unusualCharCount+latin1ExtendedCount) / float64(totalChars)
+	if problemRatio > 0.2 {
+		return true
+	}
+
+	// Check for patterns that indicate garbled text
+	// If contains many unusual characters (like ×, ÷, etc.) mixed with question marks
+	if questionMarkCount > 0 && (unusualCharCount > 0 || latin1ExtendedCount > 0) {
+		// If both question marks and unusual chars exist, likely garbled
+		if float64(questionMarkCount+unusualCharCount+latin1ExtendedCount)/float64(totalChars) > 0.2 {
+			return true
 		}
 	}
 
-	if float64(unusualCount)/float64(totalChars) > 0.2 {
-		return true
+	// If contains many Latin-1 extended characters (likely encoding issue)
+	if latin1ExtendedCount > 0 {
+		latin1Ratio := float64(latin1ExtendedCount) / float64(totalChars)
+		if latin1Ratio > 0.3 {
+			return true
+		}
 	}
 
+	return false
+}
+
+// isValidLatin1Char checks if a character is a valid Latin-1 character that might legitimately appear
+func isValidLatin1Char(r rune) bool {
+	// Common Latin-1 characters that might appear in mixed text
+	// This is a conservative list - if in doubt, consider it garbled
+	validChars := []rune{
+		0xC0, 0xC1, 0xC2, 0xC3, 0xC4, 0xC5, // À Á Â Ã Ä Å
+		0xC8, 0xC9, 0xCA, 0xCB,             // È É Ê Ë
+		0xCC, 0xCD, 0xCE, 0xCF,             // Ì Í Î Ï
+		0xD0, 0xD1,                         // Ð Ñ
+		0xD2, 0xD3, 0xD4, 0xD5, 0xD6,       // Ò Ó Ô Õ Ö
+		0xD9, 0xDA, 0xDB, 0xDC,             // Ù Ú Û Ü
+		0xDD, 0xDE,                         // Ý Þ
+		0xE0, 0xE1, 0xE2, 0xE3, 0xE4, 0xE5, // à á â ã ä å
+		0xE8, 0xE9, 0xEA, 0xEB,             // è é ê ë
+		0xEC, 0xED, 0xEE, 0xEF,             // ì í î ï
+		0xF0, 0xF1,                         // ð ñ
+		0xF2, 0xF3, 0xF4, 0xF5, 0xF6,       // ò ó ô õ ö
+		0xF9, 0xFA, 0xFB, 0xFC,             // ù ú û ü
+		0xFD, 0xFE, 0xFF,                   // ý þ ÿ
+	}
+	for _, valid := range validChars {
+		if r == valid {
+			return true
+		}
+	}
 	return false
 }

@@ -26,6 +26,10 @@ All notable changes to this project will be documented in this file.
 - Auto-fill Artist from directory name (extract before underscore)
 - Garbled text detection and automatic fallback to filename/directory name
 - Pre-write garbled text check and fix
+- Automatic cleanup of domains, URLs, and file extensions from tags
+- Automatic removal of default CD titles (e.g., "CD Digital Audio, Track#30")
+- Improved garbled text detection with Latin-1 extended character detection
+- Support for reading CommentFrame (COMM) tags correctly
 
 ### Changed
 - **BREAKING**: Only MP3 files are supported (removed FLAC, M4A, AAC, OGG, WMA support)
@@ -35,9 +39,11 @@ All notable changes to this project will be documented in this file.
 - `test` command: Supports `-f` and `-u` flags for simulation
 - `check` command: Unified output format with fix/tag commands
 - Output format: Simplified to `[n/total] Processing: filename → Title: "value", Artist: "value", Album: "value"`
-- Processing logic: Priority encoding fix, then fallback to filename/directory if empty or garbled
+- Processing logic: Priority encoding fix, then cleanup domains/extensions, then fallback to filename/directory if empty or garbled
 - `-f` flag: Now works as fallback (fill from filename/directory only when field is empty or garbled)
 - `-u` flag: Priority encoding fix, fallback to filename/directory only when empty or garbled
+- Garbled text detection: Improved sensitivity (10% question marks threshold, 20% problem characters threshold)
+- Tag cleanup: Automatically removes URLs, domains in brackets, file extensions, and default CD titles
 
 ### Added Features
 - `-u, --update` flag: Priority encoding fix, fallback to filename/directory only when empty or garbled (for `tag` command, default: `true`) or update original files (for other commands)
