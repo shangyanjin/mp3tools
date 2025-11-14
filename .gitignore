@@ -1,0 +1,24 @@
+# Executable files
+*.exe
+*.exe~
+
+# Directories
+/tmp/
+/test/
+/output/
+
+# Go build artifacts
+*.test
+*.out
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
